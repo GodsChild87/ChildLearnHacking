@@ -377,3 +377,133 @@ Mật khẩu chỉ sử dụng chữ thường.
     6. Sắp xếp kết quả tấn công theo `Payload 1`, sau đó là `Length`. Lưu ý rằng một yêu cầu cho mỗi vị trí ký tự (0 đến 7) đã được đánh giá là đúng và đã truy xuất thông tin chi tiết cho người dùng `administrator`. Lưu ý các chữ cái từ cột `Payload 2` xuống.
 
 9. Trong trình duyệt của Burp, hãy đăng nhập với tư cách là người dùng `administrator` bằng mật khẩu được liệt kê.
+
+## Exploiting NoSQL operator injection to extract data
+
+Ngay cả khi truy vấn gốc không sử dụng bất kỳ toán tử nào cho phép chạy JavaScript tùy ý, vẫn có thể inject một trong các toán tử này. Sau đó, có thể sử dụng các điều kiện boolean để xác định xem ứng dụng có thực thi bất kỳ JavaScript nào được inject thông qua toán tử này hay không.
+
+### Injection operations in MongoDB
+
+Xem xét một ứng dụng dễ bị tấn công chấp nhận tên người dùng và mật khẩu trong body của request `POST`:
+
+```
+{"username":"wiener","password":"peter"}
+```
+
+Để kiểm tra xem có thể inject toán tử hay không, có thể thử thêm toán tử `$where` làm tham số bổ sung, sau đó gửi một request trong đó điều kiện được đánh giá là sai và một yêu cầu khác được đánh giá là đúng. Ví dụ:
+
+```
+{"username":"wiener","password":"peter", "$where":"0"}
+```
+
+```
+{"username":"wiener","password":"peter", "$where":"1"}
+```
+
+Nếu có sự khác biệt giữa các response, điều này có thể chỉ ra rằng biểu thức JavaScript trong mệnh đề `$where` đang được đánh giá.
+
+### Extracting field names
+
+Nếu đã inject toán tử cho phép chạy JavaScript, có thể sử dụng phương thức `keys()` để trích xuất tên của các trường dữ liệu. Ví dụ: có thể gửi payload sau:
+
+```
+"$where":"Object.keys(this)[0].match('^.{0}a.*')"
+```
+
+Điều này kiểm tra trường dữ liệu đầu tiên trong đối tượng người dùng và trả về ký tự đầu tiên của tên trường. Điều này cho phép trích xuất tên trường theo từng ký tự.
+
+### Exfiltrating data using operators
+
+Ngoài ra, có thể trích xuất dữ liệu bằng các toán tử không cho phép chạy JavaScript. Ví dụ, có thể sử dụng toán tử `$regex` để trích xuất dữ liệu theo từng ký tự.
+
+Hãy xem xét một ứng dụng dễ bị tấn công chấp nhận tên người dùng và mật khẩu trong body của request `POST`. Ví dụ:
+
+```
+{"username":"myuser","password":"mypass"}
+```
+
+Có thể bắt đầu bằng cách kiểm tra xem toán tử `$regex` có được xử lý như sau không:
+
+```
+{"username":"admin","password":{"$regex":"^.*"}}
+```
+
+Nếu response cho yêu cầu này khác với response nhận được khi gửi mật khẩu không đúng, điều này cho thấy ứng dụng có thể bị tấn công. Có thể sử dụng toán tử `$regex` để trích xuất dữ liệu theo từng ký tự. Ví dụ: payload sau đây kiểm tra xem mật khẩu có bắt đầu bằng a không:
+
+```
+{"username":"admin","password":{"$regex":"^a*"}}
+```
+
+### Lab: Exploiting NoSQL operator injection to extract unknown fields
+
+Chức năng tra cứu người dùng cho lab này được hỗ trợ bởi cơ sở dữ liệu MongoDB NoSQL. Nó dễ bị tấn công NoSQL.
+
+Để solve lab, hãy đăng nhập với tư cách là `carlos`.
+
+#### Tip
+
+Để giải quyết bài toán này, trước tiên cần phải trích xuất giá trị của token reset mật khẩu cho người dùng carlos.
+
+#### Solution
+
+1. Trong trình duyệt Burp, thử đăng nhập vào ứng dụng bằng tên người dùng `carlos` và mật khẩu `invalid`. Lưu ý rằng nhận được thông báo lỗi `Invalid username or password`.
+
+2. Trong Burp, hãy vào `Proxy > HTTP History`. Nhấp chuột phải vào request `POST /login` và chọn `Send to Reepeater`.
+
+3. Trong Repeater, thay đổi giá trị của tham số password từ `"invalid"` thành `{"$ne":"invalid"}`, sau đó gửi request. Nhận được thông báo lỗi `Account locked`. Không thể truy cập tài khoản của Carlos, nhưng response này cho biết toán tử `$ne` đã được chấp nhận và ứng dụng dễ bị tấn công.
+
+4. Trong trình duyệt của Burp, thử đặt lại mật khẩu cho tài khoản `carlos`. Khi gửi tên người dùng `carlos`, cơ chế đặt lại liên quan đến xác minh email, vì vậy không thể tự reset lại tài khoản.
+
+5. Trong Repeater, sử dụng request `POST /login` để kiểm tra xem ứng dụng có dễ bị tấn công JavaScript hay không:
+
+    1. Thêm `"$where": "0"` làm tham số bổ sung trong dữ liệu JSON như sau: `{"username":"carlos","password":{"$ne":"invalid"}, "$where": "0"}`
+
+    2. Gửi request. Nhận được thông báo lỗi `Invalid username or password`.
+
+    3. Đổi `"$where": "0" thành "$where": "1"`, sau đó gửi lại request. Nhận được thông báo lỗi `Account locked`. Điều này cho biết JavaScript trong mệnh đề `$where` đang được đánh giá.
+
+6. Nhấp chuột phải vào request và chọn `Send to Intruder`.
+
+7. Trong Intruder, xây dựng một cuộc tấn công để xác định tất cả các trường trên đối tượng người dùng:
+
+    1. Cập nhật tham số `$where` như sau: `"$where":"Object.keys(this)[1].match('^.{}.*')"`
+
+    2. Thêm hai vị trí payload. Vị trí đầu tiên xác định số vị trí ký tự và vị trí thứ hai xác định chính ký tự đó: `"$where":"Object.keys(this)[1].match('^.{§§}§§.*')"`
+
+    3. Đặt loại tấn công thành `Cluster bomb`.
+
+    4. Trong tab `Payloads`, đảm bảo rằng `Payload set 1` được chọn, sau đó đặt `Payload type` thành `Numbers`. Đặt phạm vi số, ví dụ từ 0 đến 20.
+
+    5. Chọn `Payload set 2` và đảm bảo `Payload type` được đặt thành `Simple list`. Thêm tất cả các số, chữ thường và chữ hoa làm payload. 
+
+    6. Click vào `Start attack`.
+
+    7. Sắp xếp kết quả tấn công theo `Payload 1`, sau đó là `Length`, để xác định response có thông báo `Account locked` thay vì thông báo `Invalid username or password`. Lưu ý rằng các ký tự trong cột `Payload 2` đánh vần tên của tham số: `username`.
+
+    8. Lặp lại các bước trên để xác định thêm các tham số JSON. Có thể thực hiện việc này bằng cách tăng chỉ mục của mảng keys với mỗi lần thử, ví dụ: `"$where":"Object.keys(this)[2].match('^.{}.*')"`
+
+        Lưu ý rằng một trong các tham số JSON dành cho token reset mật khẩu.
+
+8. Kiểm tra tên trường reset mật khẩu đã xác định dưới dạng tham số truy vấn trên các endpoint khác nhau:
+
+    1. Trong `Proxy > HTTP history`, xác định yêu cầu `GET /forgot-password` là endpoint có khả năng thú vị, vì nó liên quan đến chức năng reset mật khẩu. Nhấp chuột phải vào request và chọn `Send to Repeater`.
+
+    2. Trong Repeater, hãy gửi một trường không hợp lệ trong URL: `GET /forgot-password?foo=invalid`. Response giống hệt với response ban đầu.
+
+    3. Gửi tên đã trích xuất của trường token reset mật khẩu trong URL: `GET /forgot-password?YOURTOKENNAME=invalid`. Nhận được thông báo lỗi `Invalid token`. Điều này xác nhận rằng có tên token và endpoint chính xác.
+
+9. Trong Intruder, sử dụng yêu cầu `POST /login` để xây dựng một cuộc tấn công trích xuất giá trị token reset mật khẩu của Carlos:
+
+    1. Giữ nguyên các thiết lập từ lần tấn công trước đó, nhưng cập nhật tham số `$where` như sau: `"$where":"this.YOURTOKENNAME.match('^.{§§}§§.*')"`
+
+        Đảm bảo rằng thay thế `YOURTOKENNAME` bằng tên token reset mật khẩu đã trích xuất ở bước trước.
+
+    2. Click vào `Start attack`.
+
+    3. Sắp xếp kết quả tấn công theo `Payload 1`, sau đó là `Length`, để xác định response có thông báo `Account locked` thay vì thông báo `Invalid username or password`. Lưu ý các chữ cái từ cột `Payload 2` xuống.
+
+10. Trong Repeater, hãy gửi giá trị của token reset mật khẩu trong URL của request `GET / forget-password`: `GET /forgot-password?YOURTOKENNAME=TOKENVALUE`.
+
+11. Nhấp chuột phải vào response và chọn `Request in browser > Original session`. Dán nội dung này vào trình duyệt của Burp.
+
+12. Đổi mật khẩu của Carlos, sau đó đăng nhập với tên `carlos` để solve lab.
